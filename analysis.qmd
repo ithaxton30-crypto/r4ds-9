@@ -1,0 +1,105 @@
+---
+title: "Wildfires"
+format:
+  html:
+    embed-resources: true
+execute:
+  echo: false
+---
+
+
+```{r}
+#| message: false
+library(tidyverse)
+library(purrr)
+library(leaflet)
+library(jsonlite)
+```
+
+```{r}
+raw <- jsonlite::fromJSON("data/wildfires.geojson")
+nrow(raw$features)
+```
+
+```{r}
+fire <- raw$features[1, ]
+names(fire)
+fire$geometry$coordinates[[1]][1, 1, ]
+```
+
+```{r}
+wildfires <- tibble(features = raw$features) |>
+  unnest_wider(features) |>
+  unnest_wider(properties)
+
+wildfires
+```
+
+```{r}
+#| cache: true
+fires <- wildfires |>
+  unnest_wider(geometry, names_sep = "_") |>
+  select(incident, gis_acres, fire_year, agency, state, geometry_coordinates) |>
+  mutate(
+    gis_acres = as.numeric(gis_acres),
+    fire_year = as.integer(fire_year)
+  )
+```
+
+```{r}
+august_fires <- fires |>
+  filter(str_detect(incident, "\\bAugust\\b"))
+
+nrow(august_fires)
+
+fires |>
+  slice_max(gis_acres, n = 10, with_ties = FALSE)
+```
+
+```{r}
+big_fires <- fires |>
+  filter(gis_acres >= 100000) |>
+  mutate(
+    lon = map_dbl(geometry_coordinates, \(coordinates) {
+      mean(coordinates[[1]][1, , 1], na.rm = TRUE)
+    }),
+    lat = map_dbl(geometry_coordinates, \(coordinates) {
+      mean(coordinates[[1]][1, , 2], na.rm = TRUE)
+    })
+  )
+```
+
+```{r}
+largest_fires <- big_fires |>
+  slice_max(gis_acres, n = 10, with_ties = FALSE) |>
+  mutate(
+    popup = paste0(
+      "<strong>", incident, "</strong><br>",
+      "Year: ", fire_year, "<br>",
+      "Acres: ", scales::comma(gis_acres)
+    ),
+    geometry = sf::st_sfc(
+      map(geometry_coordinates, \(coordinates) {
+        sf::st_polygon(list(cbind(
+          coordinates[[1]][1, , 1],
+          coordinates[[1]][1, , 2]
+        )))
+      }),
+      crs = 4326
+    )
+  ) |>
+  select(incident, fire_year, gis_acres, popup, geometry) |>
+  sf::st_as_sf()
+
+fire_bounds <- sf::st_bbox(largest_fires)
+
+leaflet(largest_fires) |>
+  addProviderTiles(providers$Esri.WorldStreetMap) |>
+  addPolygons(popup = ~popup) |>
+  fitBounds(
+    lng1 = fire_bounds[["xmin"]],
+    lat1 = fire_bounds[["ymin"]],
+    lng2 = fire_bounds[["xmax"]],
+    lat2 = fire_bounds[["ymax"]]
+  )
+```
